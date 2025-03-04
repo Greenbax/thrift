@@ -23,6 +23,7 @@
 #include <iostream>
 #include <limits>
 #include <vector>
+#include <regex>
 
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -47,6 +48,7 @@ static const string endl = "\n"; // avoid ostream << std::endl flushes
  *
  */
 class t_py_generator : public t_generator {
+
 public:
   t_py_generator(t_program* program,
                  const std::map<std::string, std::string>& parsed_options,
@@ -65,6 +67,7 @@ public:
     gen_twisted_ = false;
     gen_dynamic_ = false;
     gen_enum_ = false;
+    
     coding_ = "";
     gen_dynbaseclass_ = "";
     gen_dynbaseclass_exc_ = "";
@@ -170,8 +173,14 @@ public:
   void generate_forward_declaration(t_struct* tstruct) override;
   void generate_xception(t_struct* txception) override;
   void generate_service(t_service* tservice) override;
+  void render_const_map(std::ostream& out, t_type* key_type, t_type* val_type, 
+                        const std::map<t_const_value*, t_const_value*, t_const_value::value_compare>& map_val, 
+                        int indent_level);
 
   std::string render_const_value(t_type* type, t_const_value* value);
+
+  bool is_readable_string_map(t_type* type, const std::map<t_const_value*, t_const_value*, t_const_value::value_compare>& map_val);
+
 
   /**
    * Struct generation code
@@ -305,6 +314,7 @@ private:
   * True if we should generate dynamic style classes.
   */
   bool gen_dynamic_;
+
 
   bool gen_dynbase_;
   std::string gen_dynbaseclass_;
@@ -475,6 +485,8 @@ string t_py_generator::py_imports() {
   if (gen_utf8strings_) {
     ss << endl << "import sys";
   }
+  ss << endl << "from flask_babelex import gettext" << endl;
+  
   return ss.str();
 }
 
@@ -553,13 +565,81 @@ void t_py_generator::generate_enum(t_enum* tenum) {
   }
 }
 
+
 /**
- * Generate a constant value
+ * Check if type (map's value type) is string and the maps value are not snake_case.
+ */
+bool t_py_generator::is_readable_string_map(t_type* type, const map<t_const_value*, t_const_value*, t_const_value::value_compare>& map_val) {
+  if (!type->is_string()) {
+    return false;
+  }
+
+  std::regex snake_case_regex("^\"[a-z]+(_[a-z]+)+\"$");
+
+  for (const auto& it : map_val) {
+    string val_str = render_const_value(type, it.second);
+    if (std::regex_match(val_str, snake_case_regex)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Recursively render a constant map value.
+ */
+void t_py_generator::render_const_map(ostream& out, t_type* key_type, t_type* val_type, const map<t_const_value*, t_const_value*, t_const_value::value_compare>& map_val, int indent_level) {
+  indent_level++;
+  bool should_translate = is_readable_string_map(val_type, map_val);
+  out <<  "{" << endl;
+
+  bool first = true;
+  for (const auto& it : map_val) {
+    if (!first) {
+      
+      out << "," << endl;
+    }
+    first = false;
+
+    out << string(indent_level * indent_str().length(), ' ') 
+        << render_const_value(key_type, it.first) << ": ";
+    if (val_type->is_map()) {
+      t_map* nested_map = (t_map*)val_type;
+      render_const_map(out, nested_map->get_key_type(), nested_map->get_val_type(), it.second->get_map(), indent_level);
+    } else if (should_translate) {
+      out << "gettext(" << render_const_value(val_type, it.second) << ")";
+    } else {
+      // Default case: Render the value normally
+      out << render_const_value(val_type, it.second);
+    }
+  }
+
+  if (!map_val.empty()) {
+    out << endl;
+  }
+  indent_level--;
+  out << string(indent_level * indent_str().length(), ' ') << "}";
+}
+
+/**
+ * Generate a constant value.
  */
 void t_py_generator::generate_const(t_const* tconst) {
   t_type* type = tconst->get_type();
   string name = tconst->get_name();
   t_const_value* value = tconst->get_value();
+
+  if (type->is_map()) {
+    t_map* tmap = (t_map*)type;
+    t_type* key_type = tmap->get_key_type();
+    t_type* val_type = tmap->get_val_type();
+
+    indent(f_consts_) << name << " = ";
+    render_const_map(f_consts_, key_type, val_type, value->get_map(), 0);
+    f_consts_ << endl;
+    return;
+  }
 
   indent(f_consts_) << name << " = " << render_const_value(type, value);
   f_consts_ << endl;
