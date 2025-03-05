@@ -568,16 +568,20 @@ void t_py_generator::generate_enum(t_enum* tenum) {
 
 /**
  * Check if type (map's value type) is string and the maps value are not snake_case.
+ * This is used to determine if we should apply gettext translation to the string values.
  */
 bool t_py_generator::is_readable_string_map(t_type* type, const map<t_const_value*, t_const_value*, t_const_value::value_compare>& map_val) {
+  // First check if the type is even a string
   if (!type->is_string()) {
     return false;
   }
 
+  // Regex to match snake_case format: lowercase words connected by underscores
   std::regex snake_case_regex("^\"[a-z]+(_[a-z]+)+\"$");
 
   for (const auto& it : map_val) {
     string val_str = render_const_value(type, it.second);
+    // If any value is in snake_case format, return false
     if (std::regex_match(val_str, snake_case_regex)) {
       return false;
     }
@@ -587,30 +591,39 @@ bool t_py_generator::is_readable_string_map(t_type* type, const map<t_const_valu
 }
 
 /**
- * Recursively render a constant map value.
+ * Recursively renders a constant map value with proper indentation and formatting.
+ * Handles nested maps and applies gettext translation where appropriate.
  */
 void t_py_generator::render_const_map(ostream& out, t_type* key_type, t_type* val_type, const map<t_const_value*, t_const_value*, t_const_value::value_compare>& map_val, int indent_level) {
+  // Increase indent level for map contents
   indent_level++;
+  
+  // Check if we should translate the string values in this map
   bool should_translate = is_readable_string_map(val_type, map_val);
+  
   out <<  "{" << endl;
 
+  // Track first element to handle commas between elements and nested maps
   bool first = true;
+  
   for (const auto& it : map_val) {
     if (!first) {
-      
       out << "," << endl;
     }
     first = false;
 
     out << string(indent_level * indent_str().length(), ' ') 
         << render_const_value(key_type, it.first) << ": ";
+
     if (val_type->is_map()) {
+      // For nested maps, recurse on inner map
       t_map* nested_map = (t_map*)val_type;
       render_const_map(out, nested_map->get_key_type(), nested_map->get_val_type(), it.second->get_map(), indent_level);
     } else if (should_translate) {
+      // For translatable strings, wrap in gettext()
       out << "gettext(" << render_const_value(val_type, it.second) << ")";
     } else {
-      // Default case: Render the value normally
+      // For all other types, render normally
       out << render_const_value(val_type, it.second);
     }
   }
@@ -618,6 +631,8 @@ void t_py_generator::render_const_map(ostream& out, t_type* key_type, t_type* va
   if (!map_val.empty()) {
     out << endl;
   }
+  
+  // Decrease indent and close the map
   indent_level--;
   out << string(indent_level * indent_str().length(), ' ') << "}";
 }
